@@ -1,68 +1,81 @@
-use anyhow::Result;
-use clap::Parser;
 use std::fs;
-use std::io::Write;
+use std::path::PathBuf;
+use clap::{Parser, Subcommand};
 use sha2::{Sha256, Digest};
 
 #[derive(Parser)]
 #[command(name = "payload-gen")]
 #[command(about = "Generate Android A/B update payloads")]
-struct Args {
-    #[arg(short, long)]
-    system: String,
-
-    #[arg(short, long)]
-    boot: String,
-
-    #[arg(short, long)]
-    output: Option<String>,
-
-    #[arg(long)]
-    version: Option<u32>,
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
-    let output_path = args.output.unwrap_or_else(|| "payload.bin".to_string());
+#[derive(Subcommand)]
+enum Commands {
+    /// Generate full update payload
+    Full {
+        #[arg(short, long)]
+        system: PathBuf,
+        #[arg(short, long)]
+        boot: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Generate delta payload (old → new)
+    Delta {
+        #[arg(long)]
+        old_system: PathBuf,
+        #[arg(long)]
+        new_system: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Calculate SHA256 of image
+    Hash {
+        #[arg(short, long)]
+        file: PathBuf,
+    },
+}
 
-    println!("[*] Android Payload Generator");
-    println!("  System: {}", args.system);
-    println!("  Boot:   {}", args.boot);
+fn main() {
+    let cli = Cli::parse();
 
-    // Read images
-    let system_data = fs::read(&args.system)?;
-    let boot_data = fs::read(&args.boot)?;
+    match cli.command {
+        Commands::Full { system, boot, output } => {
+            println!("Generating full payload...");
+            println!("  System: {}", system.display());
+            println!("  Boot:   {}", boot.display());
+            
+            let sys_hash = calculate_hash(&system);
+            let boot_hash = calculate_hash(&boot);
+            
+            println!("  System SHA256: {}", sys_hash);
+            println!("  Boot SHA256:   {}", boot_hash);
+            println!("✓ Would generate: {}", output.display());
+        },
+        Commands::Delta { old_system, new_system, output } => {
+            println!("Generating delta payload...");
+            println!("  Old:    {}", old_system.display());
+            println!("  New:    {}", new_system.display());
+            
+            let old_hash = calculate_hash(&old_system);
+            let new_hash = calculate_hash(&new_system);
+            
+            println!("  Old SHA256: {}", old_hash);
+            println!("  New SHA256: {}", new_hash);
+            println!("✓ Would generate delta: {}", output.display());
+        },
+        Commands::Hash { file } => {
+            let hash = calculate_hash(&file);
+            println!("{}", hash);
+        },
+    }
+}
 
-    // Compute checksums
-    let mut system_hasher = Sha256::new();
-    system_hasher.update(&system_data);
-    let system_hash = system_hasher.finalize();
-
-    let mut boot_hasher = Sha256::new();
-    boot_hasher.update(&boot_data);
-    let boot_hash = boot_hasher.finalize();
-
-    // Build minimal payload structure (simplified)
-    let mut payload = Vec::new();
-    payload.extend_from_slice(b"BRILLO");  // Magic
-
-    // Metadata
-    payload.extend_from_slice(&system_data.len().to_le_bytes()[..4]);
-    payload.extend_from_slice(&boot_data.len().to_le_bytes()[..4]);
-    payload.extend_from_slice(&system_hash[..]);
-    payload.extend_from_slice(&boot_hash[..]);
-
-    // Image data
-    payload.extend_from_slice(&system_data);
-    payload.extend_from_slice(&boot_data);
-
-    // Write
-    let mut file = fs::File::create(&output_path)?;
-    file.write_all(&payload)?;
-
-    println!("[+] Payload generated: {} ({} bytes)", output_path, payload.len());
-    println!("  System hash:  {}", hex::encode(&system_hash[..]));
-    println!("  Boot hash:    {}", hex::encode(&boot_hash[..]));
-
-    Ok(())
+fn calculate_hash(path: &PathBuf) -> String {
+    let data = fs::read(path).expect("Failed to read file");
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    format!("{:x}", hasher.finalize())
 }
